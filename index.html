@@ -82,7 +82,7 @@
   .warn ul{margin:6px 0 0;padding-left:18px;font-weight:500}
 
   /* hole cards */
-  .hole{background:var(--card);border:2px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px;display:flex;gap:12px}
+  .hole{scroll-margin-top:132px;background:var(--card);border:2px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px;display:flex;gap:12px}
   .hole.flag{border-color:var(--alert)}
   .hole .body{flex:1;min-width:0}
   .num{
@@ -252,10 +252,21 @@ const KEY = 'dgdoubles:round';
 let S = {p1:'', p2:'', course:null, drivers:Array(18).fill(0)};
 
 const $ = id => document.getElementById(id);
+const remote = (typeof window.storage === 'object') && window.storage;   // Claude artifact storage, when present
 const store = {
-  async get(k){ try{ const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; }catch(e){ return null; } },
-  async set(k,v){ try{ await window.storage.set(k, JSON.stringify(v)); }catch(e){} },
-  async del(k){ try{ await window.storage.delete(k); }catch(e){} }
+  async get(k){
+    if (remote){ try{ const r = await window.storage.get(k); if (r) return JSON.parse(r.value); }catch(e){} }
+    try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; }catch(e){ return null; }
+  },
+  async set(k,v){
+    const raw = JSON.stringify(v);
+    try{ localStorage.setItem(k, raw); }catch(e){}
+    if (remote){ try{ await window.storage.set(k, raw); }catch(e){} }
+  },
+  async del(k){
+    try{ localStorage.removeItem(k); }catch(e){}
+    if (remote){ try{ await window.storage.delete(k); }catch(e){} }
+  }
 };
 const save = () => store.set(KEY, S);
 const sum = c => COURSES[c].holes.reduce((a,h)=>a+h[0],0);
@@ -311,8 +322,8 @@ function showRound(){
   const c = COURSES[S.course];
   $('courseLine').textContent = `${c.letter} · ${c.name} · par ${sum(S.course)}`;
   $('n1').textContent = S.p1; $('n2').textContent = S.p2;
-  renderHoles(); renderTop();
   window.scrollTo(0,0);
+  renderHoles();
 }
 function renderTop(){
   const a = S.drivers.filter(d=>d===1).length, b = S.drivers.filter(d=>d===2).length;
@@ -331,23 +342,19 @@ function renderTop(){
     </div>` : '';
 }
 function renderHoles(){
-  const c = COURSES[S.course], {f} = streakFlags();
-  const used = {1:S.drivers.filter(d=>d===1).length, 2:S.drivers.filter(d=>d===2).length};
-  const risky = (i,w) => !S.drivers[i] && (wouldFlag(i,w) || used[w] >= PER_PLAYER);
+  const c = COURSES[S.course];
   $('holes').innerHTML = c.holes.map((h,i) => {
-    const n = i+1, d = S.drivers[i];
-    return `<div class="hole${f[i]?' flag':''}" id="h${n}">
+    const n = i+1;
+    return `<div class="hole" id="h${n}">
       <div class="num">${n}</div>
       <div class="body">
         <div class="meta"><b>Par ${h[0]}</b><span>${h[1]} m</span></div>
         <p class="note">${h[3]}</p>
         <div class="pick">
-          <button type="button" data-h="${i}" data-w="1"
-            class="${d===1?'on1':''} ${risky(i,1)?'risky':''}">${esc(S.p1)}</button>
-          <button type="button" data-h="${i}" data-w="2"
-            class="${d===2?'on2':''} ${risky(i,2)?'risky':''}">${esc(S.p2)}</button>
+          <button type="button" data-h="${i}" data-w="1">${esc(S.p1)}</button>
+          <button type="button" data-h="${i}" data-w="2">${esc(S.p2)}</button>
         </div>
-        ${f[i] ? `<p class="streak">${esc(nameOf(d))} drives ${MAX_STREAK} in a row here</p>` : ''}
+        <p class="streak hidden"></p>
       </div>
       <button class="thumb gone" type="button" data-zoom="${n}"><img alt="Hole ${n} map"></button>
     </div>`;
@@ -355,15 +362,48 @@ function renderHoles(){
 
   $('holes').querySelectorAll('.pick button').forEach(b => b.onclick = () => {
     const i = +b.dataset.h, w = +b.dataset.w;
-    S.drivers[i] = (S.drivers[i]===w) ? 0 : w;
-    save(); renderHoles(); renderTop();
-    const el = $('h'+(i+1)); if (el) el.scrollIntoView({block:'nearest'});
+    const picked = S.drivers[i] !== w;
+    S.drivers[i] = picked ? w : 0;
+    save(); refresh();
+    if (picked) goToNextOpen(i);
   });
   $('holes').querySelectorAll('.thumb').forEach(b => b.onclick = () => {
     $('lightboxImg').src = b.querySelector('img').src;
     $('lightbox').showModal();
   });
   attachImages();
+  refresh();
+}
+
+// update the existing cards instead of rebuilding them — no layout jump
+function refresh(){
+  const {f} = streakFlags();
+  const used = {1:S.drivers.filter(d=>d===1).length, 2:S.drivers.filter(d=>d===2).length};
+  for (let i=0;i<18;i++){
+    const card = $('h'+(i+1)); if (!card) continue;
+    const d = S.drivers[i];
+    card.classList.toggle('flag', f[i]);
+    card.querySelectorAll('.pick button').forEach(btn => {
+      const w = +btn.dataset.w;
+      btn.classList.toggle('on1', d===1 && w===1);
+      btn.classList.toggle('on2', d===2 && w===2);
+      btn.classList.toggle('risky', !d && (wouldFlag(i,w) || used[w] >= PER_PLAYER));
+    });
+    const note = card.querySelector('.streak');
+    note.classList.toggle('hidden', !f[i]);
+    if (f[i]) note.textContent = `${nameOf(d)} drives ${MAX_STREAK} in a row here`;
+  }
+  renderTop();
+}
+
+// after a pick, move to the next hole that still needs a driver
+function goToNextOpen(from){
+  let target = -1;
+  for (let k=from+1;k<18;k++) if (!S.drivers[k]){ target = k; break; }
+  if (target < 0) for (let k=0;k<from;k++) if (!S.drivers[k]){ target = k; break; }
+  if (target < 0) return;
+  const el = $('h'+(target+1));
+  if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
 }
 function esc(s){ return String(s).replace(/[<>&]/g, m => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[m])); }
 
@@ -466,7 +506,7 @@ $('expPng').onclick = () => {
 };
 
 $('lightbox').onclick = () => $('lightbox').close();
-$('clearDrives').onclick = () => { S.drivers = Array(18).fill(0); save(); renderHoles(); renderTop(); };
+$('clearDrives').onclick = () => { S.drivers = Array(18).fill(0); save(); refresh(); };
 
 /* ---------- boot ---------- */
 (async () => {
